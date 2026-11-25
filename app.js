@@ -2,6 +2,7 @@ import { sb, S, $, $$, esc, can, isRep, toast, normPhone, upload, loadPerms, loa
 import * as V1 from './views1.js';
 import * as V2 from './views2.js';
 const app = $('#app');
+const toEmail = p => normPhone(p).replace('+', '') + '@momathili.app'; // الدخول برقم الهاتف عبر بريد داخلي (بدون SMS)
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 
 /* ===== شاشات الدخول ===== */
@@ -20,19 +21,15 @@ function authScreen(mode = 'login') {
     $('#go').disabled = true; $('#e').textContent = '';
     const phone = normPhone($('#p').value), password = $('#w').value;
     if (phone.length < 10 || password.length < 6) return fail('أدخل رقماً صحيحاً وكلمة مرور من 6 أحرف على الأقل');
-    if (!su) { const { error } = await sb.auth.signInWithPassword({ phone, password }); return error ? fail('رقم الهاتف أو كلمة المرور غير صحيحة') : boot(); }
+    if (!su) { const { error } = await sb.auth.signInWithPassword({ email: toEmail(phone), password }); return error ? fail('رقم الهاتف أو كلمة المرور غير صحيحة') : boot(); }
     const name = $('#n').value.trim(), av = $('#a').files[0], card = $('#c').files[0];
     if (name.length < 2 || !card) return fail('الاسم والبطاقة الجامعية مطلوبان');
     if ((av && av.size > 5e6) || card.size > 10e6) return fail('الحد الأقصى: 5MB للصورة و10MB للبطاقة');
-    const { data, error } = await sb.auth.signUp({ phone, password, options: { data: { full_name: name, phone } } });
+    const { data, error } = await sb.auth.signUp({ email: toEmail(phone), password, options: { data: { full_name: name, phone } } });
     if (error) return fail(/registered|exists/i.test(error.message) ? 'الرقم مسجّل مسبقاً' : error.message);
-    if (data.session) return finishSignup(av, card);
-    otpScreen(phone, av, card);
+    if (!data.session) return fail('يلزم تعطيل Confirm email في إعدادات Supabase ثم المحاولة مجدداً');
+    finishSignup(av, card);
   };
-}
-function otpScreen(phone, av, card) {
-  app.innerHTML = `<div class="auth"><h1>رمز التحقق</h1><p class="mut">أرسلنا رمزاً إلى ${esc(phone)}</p><input id="o" inputmode="numeric" dir="ltr"><div class="err" id="e"></div><button class="btn" id="go" style="width:100%">تأكيد</button></div>`;
-  $('#go').onclick = async () => { const { data, error } = await sb.auth.verifyOtp({ phone, token: $('#o').value.trim(), type: 'sms' }); if (error) return $('#e').textContent = 'الرمز غير صحيح'; await finishSignup(av, card); };
 }
 async function finishSignup(av, card) {
   const { data: { user } } = await sb.auth.getUser(); const row = {};

@@ -94,8 +94,8 @@ async function boot() {
   const { data: { session } } = await sb.auth.getSession();
   if (!session) return authScreen();
   S.user = session.user;
-  let { data: p } = await sb.from('profiles').select('*').eq('id', S.user.id).maybeSingle();
-  if (!p) { await sb.auth.signOut(); return authScreen(); }
+  let { data: p } = await sb.rpc('current_profile'); // الحساب المعلّق لا يستطيع قراءة صفه مباشرة بسبب RLS
+  if (!p?.id) { await sb.auth.signOut(); return authScreen(); }
   if (p.role !== 'representative') { const r = await sb.rpc('bootstrap_representative'); if (!r.error && r.data) p = r.data; } // ينجح فقط للمشرف الأعلى
   S.profile = p;
   if (p.status !== 'active') return waitScreen(p);

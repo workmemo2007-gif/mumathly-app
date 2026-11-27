@@ -1,7 +1,10 @@
-import { sb, S, PK, $, $$, esc, can, isRep, fmt, toast, modal, signed, upload, avatar, loadUsers, unsub, normPhone } from './core.js';
+import { sb, S, PK, $, $$, esc, can, isRep, fmt, toast, modal, signed, upload, avatar, ava, ic, canAdmin, THEMES, setTheme, loadUsers, unsub, normPhone } from './core.js';
 const err = e => toast(e?.message || 'حدث خطأ');
 const ok = r => { if (r.error) { err(r.error); return false; } return true; };
 const scrollEnd = e => { e.scrollTop = e.scrollHeight; };
+const hm = d => d ? new Date(d).toLocaleTimeString('ar-IQ', { hour: '2-digit', minute: '2-digit' }) : '';
+const ROLE = { student: 'طالب', supervisor: 'مشرف', representative: 'الممثل الأعلى' };
+const roomHead = o => `<header class="rhead"><a class="ib alt" href="#/chats" aria-label="رجوع">${ic('back', 20)}</a>${o.av || `<span class="av lg ph">${ic(o.icon || 'users', 22)}</span>`}<div class="rtitle"><b>${esc(o.title)}</b><small>${esc(o.sub)}</small></div>${o.right || ''}</header>`;
 
 /* ===== اختيار مستخدم (بحث عن حساب) ===== */
 export async function userPicker(onPick) {
@@ -21,11 +24,13 @@ export async function publicChat(el) {
   const since = new Date(Date.now() - 864e5).toISOString();
   const { data } = await sb.from('public_chat_messages').select('*').is('deleted_at', null).gte('created_at', since).order('created_at');
   const canSend = can('public_chat'), canDel = isRep() || can('delete_public_messages');
-  el.innerHTML = `<p class="mut">الرسائل تُحذف تلقائياً بعد 24 ساعة.</p><div class="msgs" id="m"></div>${canSend ? '<div class="send"><input id="t" placeholder="اكتب رسالة…"><button class="btn" id="s">إرسال</button></div>' : '<p class="mut">ليست لديك صلاحية الكتابة.</p>'}`;
+  el.innerHTML = `<section class="room">${roomHead({ title: 'الدردشة العامة', sub: 'مساحة نقاش الشعبة اليومية', icon: 'users' })}<div class="rban">${ic('timer', 12)} تُحذف الرسائل تلقائياً بعد 24 ساعة</div><div class="feed" id="m"></div>
+    ${canSend ? `<div class="rin"><div class="r1"><input id="t" placeholder="اكتب رسالتك هنا…" aria-label="رسالة"><button class="ib grad" id="s" aria-label="إرسال">${ic('send', 20).replace('class="ic"', 'class="ic flip"')}</button></div></div>` : '<div class="rin"><p class="mut" style="text-align:center;margin:0">ليست لديك صلاحية الكتابة.</p></div>'}</section>`;
   const box = $('#m', el);
   const add = m => {
-    const u = S.users[m.sender_id], d = document.createElement('div'); d.className = 'msg' + (m.sender_id === S.user.id ? ' me' : ''); d.dataset.id = m.id;
-    d.innerHTML = `<small>${esc(u?.full_name || 'مستخدم')} · ${fmt(m.created_at)} ${canDel ? '<a href="#" data-x style="color:inherit">🗑</a>' : ''}</small>${esc(m.body)}`;
+    const me = m.sender_id === S.user.id, u = S.users[m.sender_id], d = document.createElement('div');
+    d.className = 'msg' + (me ? ' me' : ''); d.dataset.id = m.id;
+    d.innerHTML = `${me ? '' : `<span class="nm">${esc(u?.full_name || 'مستخدم')}</span>`}${esc(m.body)}<small><span>${hm(m.created_at)}</span>${canDel ? '<a href="#" data-x>حذف</a>' : ''}</small>`;
     d.querySelector('[data-x]')?.addEventListener('click', async e => { e.preventDefault(); if (confirm('حذف الرسالة لدى الجميع؟') && ok(await sb.from('public_chat_messages').delete().eq('id', m.id))) d.remove(); });
     box.append(d); scrollEnd(box);
   };
@@ -36,30 +41,46 @@ export async function publicChat(el) {
     .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'public_chat_messages' }, p => box.querySelector(`[data-id="${p.old.id}"]`)?.remove()).subscribe());
 }
 
-/* ===== المحادثات الخاصة ===== */
+/* ===== المحادثات ===== */
 export async function chats(el, convId) {
   if (convId) return chatRoom(el, convId);
   sb.rpc('delete_expired_private_messages');
-  const { data } = await sb.rpc('my_conversations');
-  el.innerHTML = `<button class="btn" id="new">+ محادثة جديدة</button><br><br>` + ((data || []).map(c => `<div class="card row" data-c="${c.conversation_id}" style="cursor:pointer"><img class="av" alt="" src="${esc(c.other_avatar || 'icon.svg')}"><span class="sp"><b>${esc(c.other_name)}</b><br><span class="mut">${esc((c.last_body || 'مرفق').slice(0, 50))}</span></span>${c.delete_after_24h ? '<span class="pill a">24 ساعة</span>' : ''}</div>`).join('') || '<p class="mut">لا توجد محادثات.</p>');
+  if (!Object.keys(S.users).length) await loadUsers();
+  const [{ data: convs }, { data: last }] = await Promise.all([sb.rpc('my_conversations'),
+    sb.from('public_chat_messages').select('body,sender_id').is('deleted_at', null).order('created_at', { ascending: false }).limit(1)]);
+  const lm = last?.[0], prev = lm ? `${S.users[lm.sender_id]?.full_name || ''}: ${lm.body}` : 'ابدأ النقاش مع زملائك';
+  el.innerHTML = `<div class="row"><div class="sp"><h2 style="margin:0">المحادثات والتواصل</h2><span class="mut">دردشة الشعبة والمراسلات الخاصة</span></div><button class="btn" id="new">${ic('plus', 16)} جديدة</button></div>
+    <a class="gcard" href="#/public"><span class="gi">${ic('users', 28)}</span><div class="sp"><b>الدردشة العامة للشعبة</b><p>${esc(prev)}</p><span class="chip" style="margin-top:6px">${ic('timer', 12)} تُحذف بعد 24 ساعة</span></div></a>
+    <div class="fld"><input id="q" placeholder="ابحث باسم زميل…" aria-label="بحث">${ic('search', 20)}</div><h4 class="mut" style="margin:6px 0 10px">المحادثات الخاصة</h4><div id="l"></div>`;
+  const draw = () => {
+    const q = $('#q', el).value.trim(), list = (convs || []).filter(c => !q || c.other_name.includes(q));
+    $('#l', el).innerHTML = list.map(c => `<div class="citem" data-c="${c.conversation_id}">${ava(c.other_name, c.other_avatar)}<div class="sp"><div class="row"><b class="sp">${esc(c.other_name)}</b><span class="mut" style="font-size:11px">${hm(c.last_at)}</span></div><p>${esc(c.last_body || 'مرفق')}</p></div>${c.delete_after_24h ? '<span class="pill a">24س</span>' : ''}</div>`).join('') || '<p class="mut" style="text-align:center">لا توجد محادثات بعد.</p>';
+    $$('[data-c]', el).forEach(d => d.onclick = () => location.hash = '#/chat/' + d.dataset.c);
+  };
+  $('#q', el).oninput = draw; draw();
   $('#new', el).onclick = () => userPicker(async uid => { const r = await sb.rpc('start_private_chat', { other_id: uid }); if (ok(r)) location.hash = '#/chat/' + r.data; });
-  $$('[data-c]', el).forEach(d => d.onclick = () => location.hash = '#/chat/' + d.dataset.c);
 }
 async function chatRoom(el, cid) {
   const { data: convs } = await sb.rpc('my_conversations'); const c = (convs || []).find(x => x.conversation_id === cid);
-  if (!c) { el.innerHTML = '<p class="mut">المحادثة غير موجودة.</p>'; return; }
+  if (!c) { el.innerHTML = '<p class="mut" style="padding:16px">المحادثة غير موجودة.</p>'; return; }
   const { data: msgs } = await sb.from('private_messages').select('*,private_message_attachments(*),study_files(title,storage_path,original_file_name)').eq('conversation_id', cid).is('deleted_at', null).order('created_at');
-  el.innerHTML = `<div class="row"><a class="btn alt sm" href="#/chat">← الرجوع</a><b class="sp">${esc(c.other_name)}</b><label class="row"><input type="checkbox" id="ret" ${c.delete_after_24h ? 'checked' : ''}> حذف بعد 24 ساعة</label></div><br><div class="msgs" id="m"></div>
-    <div class="send"><input id="t" placeholder="رسالة…"><label class="btn alt" title="صورة أو فيديو">📎<input id="f" type="file" accept="image/*,video/*" hidden></label><button class="btn alt" id="rec" title="تسجيل صوتي">🎤</button><button class="btn alt" id="lib" title="ملف من المكتبة">📚</button><button class="btn" id="s">إرسال</button></div>`;
+  let ret = c.delete_after_24h;
+  const retLabel = () => `${ic('timer', 14)} 24س: ${ret ? 'مفعّل' : 'متوقف'}`;
+  el.innerHTML = `<section class="room">${roomHead({ title: c.other_name, sub: 'محادثة خاصة', av: ava(c.other_name, c.other_avatar, 'av lg'), right: `<button class="btn alt sm" id="ret" title="الحذف التلقائي بعد 24 ساعة">${retLabel()}</button>` })}
+    <div class="rban" id="rb" ${ret ? '' : 'hidden'}>${ic('timer', 12)} الرسائل المؤقتة مفعّلة: تُحذف تلقائياً بعد 24 ساعة</div><div class="feed" id="m"></div>
+    <div class="rin"><div class="amenu" id="am" hidden><label>${ic('image', 22)}صورة أو فيديو<input id="f" type="file" accept="image/*,video/*" hidden></label><button type="button" id="lib">${ic('book', 22)}ملف من المكتبة</button></div>
+    <div class="r1" id="nin"><button class="ib" id="clip" aria-label="مرفقات">${ic('clip', 20)}</button><input id="t" placeholder="اكتب رسالتك هنا…" aria-label="رسالة"><button class="ib" id="rec" aria-label="تسجيل صوتي">${ic('mic', 20)}</button><button class="ib grad" id="s" aria-label="إرسال">${ic('send', 20).replace('class="ic"', 'class="ic flip"')}</button></div>
+    <div class="recbar" id="rb2" hidden><button class="ib alt" id="rc" aria-label="إلغاء">${ic('trash', 18)}</button><span class="rd"></span><span class="rtm" id="rt">00:00</span><button class="btn sm" id="rs">إرسال ${ic('send', 14).replace('class="ic"', 'class="ic flip"')}</button></div></div></section>`;
   const box = $('#m', el), seen = new Set();
   const draw = async m => {
     if (seen.has(m.id)) return; seen.add(m.id);
-    const d = document.createElement('div'); d.className = 'msg' + (m.sender_id === S.user.id ? ' me' : ''); d.dataset.id = m.id;
-    let html = `<small>${fmt(m.created_at)}</small>${m.body ? esc(m.body) : ''}`;
+    const me = m.sender_id === S.user.id, d = document.createElement('div'); d.className = 'msg' + (me ? ' me' : ''); d.dataset.id = m.id;
+    let html = m.body ? esc(m.body) : '';
     const atts = m.private_message_attachments || (await sb.from('private_message_attachments').select('*').eq('message_id', m.id)).data || [];
-    for (const a of atts) { const u = await signed('private-message-media', a.storage_path); if (u) html += a.attachment_kind === 'image' ? `<img src="${u}" alt="">` : a.attachment_kind === 'video' ? `<video src="${u}" controls></video>` : `<audio src="${u}" controls></audio>`; }
-    if (m.study_file_id) { const f = m.study_files || (await sb.from('study_files').select('title,storage_path,original_file_name').eq('id', m.study_file_id).single()).data; if (f) html += `<br>📄 <a href="#" data-f style="color:inherit">${esc(f.title)}</a>`; d.dataset.path = f?.storage_path || ''; }
-    d.innerHTML = html; d.querySelector('[data-f]')?.addEventListener('click', async e => { e.preventDefault(); const u = await signed('study-files', d.dataset.path); if (u) window.open(u, '_blank'); });
+    for (const a of atts) { const u = await signed('private-message-media', a.storage_path); if (u) html += a.attachment_kind === 'image' ? `<img src="${u}" alt="صورة مرفقة">` : a.attachment_kind === 'video' ? `<video src="${u}" controls></video>` : `<audio src="${u}" controls></audio>`; }
+    if (m.study_file_id) { const f = m.study_files || (await sb.from('study_files').select('title,storage_path,original_file_name').eq('id', m.study_file_id).single()).data; if (f) html += `<div>${ic('file', 16)} <a href="#" data-f>${esc(f.title)}</a></div>`; d.dataset.path = f?.storage_path || ''; }
+    d.innerHTML = html + `<small><span>${hm(m.created_at)}</span></small>`;
+    d.querySelector('[data-f]')?.addEventListener('click', async e => { e.preventDefault(); const u = await signed('study-files', d.dataset.path); if (u) window.open(u, '_blank'); });
     box.append(d); scrollEnd(box);
   };
   for (const m of msgs || []) await draw(m);
@@ -70,47 +91,52 @@ async function chatRoom(el, cid) {
   };
   const go = async () => { const t = $('#t', el).value.trim(); if (!t) return; $('#t', el).value = ''; await send(t); };
   $('#s', el).onclick = go; $('#t', el).onkeydown = e => e.key === 'Enter' && go();
-  $('#f', el).onchange = async e => { const f = e.target.files[0]; if (!f) return; if (f.size > 52428800) return toast('الحجم الأقصى 50MB'); await send('', f, f.type.startsWith('video') ? 'video' : 'image'); e.target.value = ''; };
-  $('#ret', el).onchange = async e => ok(await sb.from('conversation_members').update({ delete_messages_after_24h: e.target.checked }).match({ conversation_id: cid, user_id: S.user.id }));
-  let mr, chunks = [], t0;
-  $('#rec', el).onclick = async e => {
-    const b = e.currentTarget;
-    if (mr?.state === 'recording') { mr.stop(); return; }
+  $('#clip', el).onclick = () => { $('#am', el).hidden = !$('#am', el).hidden; };
+  $('#f', el).onchange = async e => { const f = e.target.files[0]; if (!f) return; if (f.size > 52428800) return toast('الحجم الأقصى 50MB'); $('#am', el).hidden = true; await send('', f, f.type.startsWith('video') ? 'video' : 'image'); e.target.value = ''; };
+  $('#ret', el).onclick = async () => { const n = !ret; if (ok(await sb.from('conversation_members').update({ delete_messages_after_24h: n }).match({ conversation_id: cid, user_id: S.user.id }))) { ret = n; $('#ret', el).innerHTML = retLabel(); $('#rb', el).hidden = !ret; } };
+  let mr, chunks = [], t0, tick;
+  const stopUi = () => { clearInterval(tick); $('#rb2', el).hidden = true; $('#nin', el).hidden = false; };
+  $('#rec', el).onclick = async () => {
     try {
-      const st = await navigator.mediaDevices.getUserMedia({ audio: true }); mr = new MediaRecorder(st); chunks = []; t0 = Date.now();
+      const st = await navigator.mediaDevices.getUserMedia({ audio: true }); mr = new MediaRecorder(st); chunks = []; mr._cancel = false;
       mr.ondataavailable = x => chunks.push(x.data);
-      mr.onstop = async () => { st.getTracks().forEach(t => t.stop()); b.textContent = '🎤'; const blob = new Blob(chunks, { type: mr.mimeType }); await send('', new File([blob], 'voice.' + (mr.mimeType.includes('mp4') ? 'm4a' : 'webm'), { type: mr.mimeType }), 'audio', (Date.now() - t0) / 1000); };
-      mr.start(); b.textContent = '⏹'; 
+      mr.onstop = async () => { st.getTracks().forEach(t => t.stop()); stopUi(); if (mr._cancel) return; const blob = new Blob(chunks, { type: mr.mimeType }); await send('', new File([blob], 'voice.' + (mr.mimeType.includes('mp4') ? 'm4a' : 'webm'), { type: mr.mimeType }), 'audio', (Date.now() - t0) / 1000); };
+      t0 = Date.now(); mr.start(); $('#nin', el).hidden = true; $('#rb2', el).hidden = false; $('#am', el).hidden = true;
+      tick = setInterval(() => { const s = Math.floor((Date.now() - t0) / 1000); $('#rt', el).textContent = String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0'); }, 500);
     } catch { toast('تعذر الوصول إلى الميكروفون'); }
   };
+  $('#rc', el).onclick = () => { if (mr?.state === 'recording') { mr._cancel = true; mr.stop(); } };
+  $('#rs', el).onclick = () => { if (mr?.state === 'recording') mr.stop(); };
   $('#lib', el).onclick = async () => {
+    $('#am', el).hidden = true;
     const { data: fs } = await sb.from('study_files').select('id,title').eq('status', 'published').order('created_at', { ascending: false }).limit(60);
-    const m = modal(`<h3>اختر ملفاً من المكتبة</h3>${(fs || []).map(f => `<div class="card" data-f="${f.id}" style="cursor:pointer">📄 ${esc(f.title)}</div>`).join('') || '<p class="mut">لا توجد ملفات منشورة.</p>'}`);
+    const m = modal(`<h3>اختر ملفاً من المكتبة</h3>${(fs || []).map(f => `<div class="card" data-f="${f.id}" style="cursor:pointer">${ic('file', 16)} ${esc(f.title)}</div>`).join('') || '<p class="mut">لا توجد ملفات منشورة.</p>'}`);
     $$('[data-f]', m).forEach(d => d.onclick = async () => { m.close(); const r = await sb.from('private_messages').insert({ conversation_id: cid, sender_id: S.user.id, study_file_id: d.dataset.f }).select().single(); if (ok(r)) draw(r.data); });
   };
   S.ch.push(sb.channel('pm' + cid).on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'private_messages', filter: `conversation_id=eq.${cid}` }, p => setTimeout(() => draw(p.new), 600))
     .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'private_messages' }, p => box.querySelector(`[data-id="${p.old.id}"]`)?.remove()).subscribe());
 }
 
-/* ===== الإشعارات ===== */
-export async function notifications(el) {
-  const { data } = await sb.from('notifications').select('*').order('created_at', { ascending: false }).limit(60);
-  el.innerHTML = `<div class="row"><button class="btn alt sm" id="all">تعليم الكل كمقروء</button><button class="btn alt sm" id="perm">تفعيل إشعارات المتصفح</button></div><br>` + ((data || []).map(n => `<div class="card" style="${n.read_at ? 'opacity:.65' : 'border-color:var(--amber)'}"><b>${esc(n.title)}</b><div>${esc(n.body)}</div><div class="mut">${fmt(n.created_at)}</div></div>`).join('') || '<p class="mut">لا توجد إشعارات.</p>');
-  $('#all', el).onclick = async () => { await sb.from('notifications').update({ read_at: new Date().toISOString() }).is('read_at', null); S.unread = 0; document.dispatchEvent(new Event('unread')); notifications(el); };
-  $('#perm', el).onclick = async () => toast((await Notification.requestPermission?.()) === 'granted' ? 'تم التفعيل' : 'لم يُمنح الإذن');
-}
-
-/* ===== الحساب ===== */
+/* ===== الحساب والأنماط ===== */
 export async function profile(el) {
-  const p = S.profile;
-  el.innerHTML = `<div class="card"><div class="row">${avatar(p)}<span class="sp"><b>${esc(p.full_name)}</b><br><span class="mut" dir="ltr">${esc(p.phone)}</span></span><span class="pill g">${{ student: 'طالب', supervisor: 'مشرف', representative: 'ممثل' }[p.role]}</span></div></div>
-    <div class="card"><label>الاسم الكامل</label><input id="n" value="${esc(p.full_name)}"><label>صورة شخصية جديدة</label><input id="a" type="file" accept="image/*"><button class="btn" id="save">حفظ التعديلات</button></div>
-    <button class="btn bad" id="out">تسجيل الخروج</button>`;
-  $('#save', el).onclick = async () => {
-    const row = { full_name: $('#n', el).value.trim() }; if (row.full_name.length < 2) return toast('الاسم قصير');
-    const f = $('#a', el).files[0];
-    if (f) try { const path = await upload('avatars', f, S.user.id); row.avatar_url = sb.storage.from('avatars').getPublicUrl(path).data.publicUrl; } catch (e) { return err(e); }
-    if (ok(await sb.from('profiles').update(row).eq('id', S.user.id))) { Object.assign(S.profile, row); toast('تم الحفظ'); profile(el); }
+  const p = S.profile, cur = document.body.getAttribute('data-theme') || 'blue';
+  el.innerHTML = `<div class="pcard"><div class="pbg"></div>${ava(p.full_name, p.avatar_url, 'av xl')}<h2>${esc(p.full_name)}</h2><div class="mut" dir="ltr">${esc(p.phone)}</div>
+    <div class="row" style="justify-content:center;margin-top:10px"><span class="pill">${ROLE[p.role]}</span><span class="pill g">حساب معتمد</span></div>
+    <div class="row" style="margin-top:14px">${p.university_card_path ? `<button class="btn alt sm sp" id="card">${ic('idcard', 16)} البطاقة الجامعية</button>` : ''}<button class="btn alt sm sp" id="edit">${ic('pencil', 16)} تعديل بياناتي</button></div></div>
+    <div class="card"><h3>${ic('palette', 18)} مظهر وأنماط التطبيق</h3><p class="mut" style="margin:0 0 12px">اختر النمط المفضل؛ يُحفظ في حسابك ويبقى معك على أي جهاز حتى تغيّره.</p>
+      <div class="tgrid">${THEMES.map(t => `<button class="tcard ${t.k === cur ? 'on' : ''}" data-th="${t.k}"><span class="row"><span class="sw">${t.sw.map(c => `<i style="background:${c}"></i>`).join('')}</span><span><b style="font-size:13px">${t.name}</b><br><span class="mut" style="font-size:11px">${t.desc}</span></span></span>${t.k === cur ? `<span class="tck">${ic('tick', 14)}</span>` : ''}</button>`).join('')}</div></div>
+    ${canAdmin() ? `<a class="card row" href="#/admin" style="text-decoration:none;color:inherit;cursor:pointer"><span class="ib grad">${ic('shield', 20)}</span><span class="sp"><b>لوحة الإدارة</b><br><span class="mut">الحسابات والملفات والمواد وسجل العمليات</span></span>${ic('back', 18).replace('class="ic"', 'class="ic flip"')}</a>` : ''}
+    <button class="btn bad big" id="out">${ic('logout', 18)} تسجيل الخروج</button>`;
+  $$('[data-th]', el).forEach(b => b.onclick = async () => { await setTheme(b.dataset.th); profile(el); });
+  $('#card', el)?.addEventListener('click', async () => { const u = await signed('university-cards', p.university_card_path); if (u) window.open(u, '_blank'); });
+  $('#edit', el).onclick = () => {
+    const m = modal(`<h3>تعديل بياناتي</h3><label>الاسم الكامل</label><input id="n" value="${esc(p.full_name)}"><label>صورة شخصية جديدة</label><input id="a" type="file" accept="image/*"><button class="btn big" id="save">حفظ</button>`);
+    $('#save', m).onclick = async () => {
+      const row = { full_name: $('#n', m).value.trim() }; if (row.full_name.length < 2) return toast('الاسم قصير');
+      const f = $('#a', m).files[0];
+      if (f) try { const path = await upload('avatars', f, S.user.id); row.avatar_url = sb.storage.from('avatars').getPublicUrl(path).data.publicUrl; } catch (e) { return err(e); }
+      if (ok(await sb.from('profiles').update(row).eq('id', S.user.id))) { Object.assign(S.profile, row); m.close(); toast('تم الحفظ'); profile(el); }
+    };
   };
   $('#out', el).onclick = async () => { await sb.auth.signOut(); location.hash = ''; location.reload(); };
 }
